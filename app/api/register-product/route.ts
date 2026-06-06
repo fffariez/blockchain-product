@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import Web3 from "web3";
+import { ethers } from "ethers";
 import ProductRegistryJson from "@/contracts/ProductRegistry.json";
 import { createClient } from "@supabase/supabase-js";
 
@@ -34,32 +34,43 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const web3 = new Web3(rpcUrl);
-
+    const provider = new ethers.JsonRpcProvider(rpcUrl);
     const formattedKey = privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`;
+    const wallet = new ethers.Wallet(formattedKey, provider);
 
-    const account = web3.eth.accounts.privateKeyToAccount(formattedKey);
-    web3.eth.accounts.wallet.add(account);
-
-    const contract = new web3.eth.Contract(
+    const contract = new ethers.Contract(
+      contractAddress,
       (ProductRegistryJson as any).abi,
-      contractAddress
+      wallet
     );
 
-    const tx = await contract.methods
-      .registerProduct(name, description, location ?? "", Math.round(Number(price)))
-      .send({ from: account.address, gas: "300000" });
+    const tx = await contract.registerProduct(
+      name,
+      description,
+      location ?? "",
+      Math.round(Number(price))
+    );
 
-    const eventId =
-      (tx as any).events?.ProductRegistered?.returnValues?.id ??
-      (tx as any).events?.ProductRegistered?.returnValues?.[0];
+    const receipt = await tx.wait();
 
-    const blockchainProductId =
-      eventId !== undefined ? String(eventId) : String(Date.now());
+    // Parse ProductRegistered event to get the on-chain product ID
+    let blockchainProductId: string = String(Date.now());
+    const iface = new ethers.Interface((ProductRegistryJson as any).abi);
+    for (const log of receipt.logs) {
+      try {
+        const parsed = iface.parseLog(log);
+        if (parsed?.name === "ProductRegistered") {
+          blockchainProductId = String(parsed.args[0]);
+          break;
+        }
+      } catch {
+        // skip logs that don't match
+      }
+    }
 
     return NextResponse.json({
       blockchainProductId,
-      txHash: (tx.transactionHash as string) ?? null,
+      txHash: receipt.hash ?? null,
     });
   } catch (err: any) {
     console.error("Blockchain registration error:", err);
